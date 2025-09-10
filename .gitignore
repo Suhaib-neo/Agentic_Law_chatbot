@@ -1,0 +1,14 @@
+.streamlit/
+
+__pycache__/
+
+agentic_chatbot/
+
+logs/
+
+trash files/
+
+.env
+
+tp.ipynb
+
