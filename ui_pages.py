@@ -1,3 +1,4 @@
+import os
 import time
 import streamlit as st
 import re
@@ -10,6 +11,38 @@ from rag import setup_rag_system
 from db import init_connection
 
 nest_asyncio.apply()
+from datasets import Dataset
+from ragas import evaluate
+from dotenv import load_dotenv
+from ragas.metrics import faithfulness, LLMContextPrecisionWithoutReference
+from langchain_groq import ChatGroq
+from langchain_huggingface import HuggingFaceEmbeddings
+from ragas.llms import LangchainLLMWrapper
+from ragas.embeddings.base import Embeddings
+
+load_dotenv()  # load GROQ_API_KEY from .env
+
+# ---- LLM Setup ----
+groq_llm = ChatGroq(
+    model_name="llama-3.1-8b-instant",
+    temperature=0,
+    api_key=os.getenv("GROQ_API_KEY")
+)
+llm_wrapper = LangchainLLMWrapper(langchain_llm=groq_llm)
+
+# ---- Embeddings Setup ----
+class CustomRagasEmbeddings(Embeddings):
+    def __init__(self, embeddings):
+        self.embeddings = embeddings
+
+    def embed_documents(self, texts):
+        return self.embeddings.embed_documents(texts)
+
+    def embed_query(self, text):
+        return self.embeddings.embed_query(text)
+
+hf_embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+embeddings_model = CustomRagasEmbeddings(embeddings=hf_embeddings)
 
 
 def login_page():
@@ -502,6 +535,7 @@ def main_page():
                     return await agent.run(prompt_for_agent, max_iterations=20)
 
                 response = asyncio.run(ask_agent(st.session_state.agent, prompt_for_agent))
+                print(response)
 
                 # Clear thinking indicator
                 thinking_placeholder.empty()
@@ -520,6 +554,65 @@ def main_page():
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
+
+                # === Evaluate Metrics ===
+                try:
+                    # Gather retrieved context chunks
+                    context_chunks = []
+                    if hasattr(response, "tool_calls") and response.tool_calls:
+                        for tool_call in response.tool_calls:
+                            raw_output = getattr(tool_call.tool_output, "raw_output", None)
+                            if raw_output and hasattr(raw_output, "source_nodes"):
+                                for node in raw_output.source_nodes:
+                                    context_chunks.append(node.text)
+
+                    if context_chunks:
+                        # Build dataset for Ragas
+                        data_samples = {
+                            "user_input": [prompt],
+                            "response": [text_output],
+                            "retrieved_contexts": [context_chunks]
+                        }
+                        dataset = Dataset.from_dict(data_samples)
+
+                        context_precision_metric = LLMContextPrecisionWithoutReference(llm=llm_wrapper)
+
+                        # Run evaluation
+                        results = evaluate(
+                            dataset,
+                            metrics=[faithfulness, context_precision_metric],
+                            llm = llm_wrapper,
+                            embeddings = embeddings_model
+                        )
+
+                        print(results)
+
+                        faithfulness_score = results["faithfulness"][0]
+                        context_precision_score = results['llm_context_precision_without_reference'][0]
+
+                        # Display the score nicely
+                        st.markdown(f"""
+                        <div style="
+                            margin-top:1rem;
+                            padding:0.8rem 1rem;
+                            background: linear-gradient(135deg, #06beb6 0%, #48b1bf 100%);
+                            color: white;
+                            border-radius:8px;
+                            display:inline-block;
+                            box-shadow: 0 3px 15px rgba(72, 177, 191, 0.3);
+                            font-size: 1rem;
+                        ">
+                            <strong>Faithfulness Score:</strong> {faithfulness_score:.3f}
+                            &nbsp;&nbsp;|&nbsp;&nbsp;
+                            <strong>Context Precision (LLM, no reference):</strong> {context_precision_score:.3f}
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.info("No relevant context retrieved. Metrics not computed.")
+
+                except Exception as e:
+                    st.warning(f"Metrics evaluation failed: {e}")
+
 
                 # Display source metadata
                 if hasattr(response, "tool_calls") and response.tool_calls:

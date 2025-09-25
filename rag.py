@@ -8,7 +8,7 @@ from llama_index.llms.groq import Groq
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core import VectorStoreIndex
-from llama_index.core.retrievers import VectorIndexRetriever, RecursiveRetriever
+from llama_index.core.retrievers import VectorIndexRetriever, RecursiveRetriever, QueryFusionRetriever
 from llama_index.retrievers.bm25 import BM25Retriever
 from llama_index.core.tools import QueryEngineTool
 from llama_index.core.query_engine import RetrieverQueryEngine
@@ -31,8 +31,6 @@ def setup_rag_system(debug=False):
     llm = Groq(
         model="llama-3.1-8b-instant",
         api_key=groq_api_key,
-        max_input_tokens=1200,
-        max_output_tokens=1200
     )
 
     # Embeddings
@@ -70,13 +68,14 @@ def setup_rag_system(debug=False):
         index = VectorStoreIndex.from_vector_store(vector_store=vector_store, embed_model=embedding_model)
 
         # Retrievers
-        vector_retriever = VectorIndexRetriever(index=index, similarity_top_k=2, retriever_mode="mmr")
-        bm25_retriever = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=2)
+        vector_retriever = VectorIndexRetriever(index=index, similarity_top_k=5, retriever_mode="mmr")
+        bm25_retriever = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=5)
 
-        hybrid_retriever = RecursiveRetriever(
-            "vector",
-            retriever_dict={"vector": vector_retriever, "bm25": bm25_retriever},
-            verbose=True
+        hybrid_retriever = QueryFusionRetriever(
+            retrievers=[vector_retriever, bm25_retriever],
+            mode="reciprocal_rerank",
+            similarity_top_k=2,
+            llm=llm
         )
         hybrid_retrievers.append(hybrid_retriever)
 
@@ -136,6 +135,8 @@ def setup_rag_system(debug=False):
         - If LEGAL_QUERY:
             a) If the query references specific cases between 2021–2025, use the provided case documents to retrieve and answer. Cite the case name and year.
             b) If the query is a general legal question, answer concisely and professionally, using legal reasoning. Do NOT speculate beyond standard legal knowledge.
+            c) If the user query references multiple cases (e.g., 2021 and 2025), retrieve information from all relevant cases and summarize them.
+            d) When summarizing multiple cases, ALWAYS return the output in this structured format.
         - If NON_LEGAL_QUERY:
             Respond ONLY with: "I can only answer questions about legal cases (2021–2025) or general law queries."
 
@@ -152,7 +153,7 @@ def setup_rag_system(debug=False):
             • "Tell me a joke."
 
         4. Style & tone:
-        - Be concise, professional, and clear.
+        - Be professional and clear.
         - Use citations ONLY when referring to case documents (case name + year).
         - Never provide speculative or non-legal answers.
         """
@@ -163,13 +164,13 @@ def setup_rag_system(debug=False):
         tools=retriever_tools,
         llm=llm,
         verbose=True,
-        max_iterations=20,
+        max_iterations=15,
         system_prompt=system_prompt
     )
 
     logger.info("RAG system setup complete.")
 
     if debug:
-        return agent, llm, hybrid_retrievers
+        return agent, llm, hybrid_retrievers, embedding_model
 
     return agent, llm

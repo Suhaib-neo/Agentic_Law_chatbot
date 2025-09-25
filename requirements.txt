@@ -11,6 +11,11 @@ llama-index
 llama-index-retrievers-bm25
 llama-index-storage-chat-store-mongo
 
+ragas
+datasets
+langchain-groq
+langchain-huggingface
+
 pymongo
 
 streamlit
